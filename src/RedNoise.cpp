@@ -38,7 +38,13 @@ namespace Config {
         Mode currentMode = Mode::RASTERIZED;
         std::vector<float> depthBuffer;
         
-        Render() : depthBuffer(Display::WIDTH * Display::HEIGHT, 0.0f) {}
+        Render() {
+            depthBuffer.resize(Display::WIDTH * Display::HEIGHT, std::numeric_limits<float>::infinity());
+        }
+
+        void clearDepthBuffer() {
+            std::fill(depthBuffer.begin(), depthBuffer.end(), std::numeric_limits<float>::infinity());
+        }
     };
 }
 
@@ -48,14 +54,13 @@ namespace Config {
 // (Math class - fundamental operations used by other components)
 class Math {
     public:
-        struct ProjectedTriangle {
-            CanvasPoint v0, v1, v2;
-            
-            ProjectedTriangle(
-                const CanvasPoint& v0, 
-                const CanvasPoint& v1, 
-                const CanvasPoint& v2
-            ) : v0(v0), v1(v1), v2(v2) {}
+        struct TriangleSlopes {
+            float topToMiddleX;
+            float topToBottomX;
+            float middleToBottomX;
+            float topToMiddleZ;
+            float topToBottomZ;
+            float middleToBottomZ;
         };
 
         static std::vector<float> interpolateSingleFloats(
@@ -71,6 +76,42 @@ class Math {
             }
             
             return results;
+        }
+
+        static void sortVerticesByY(
+            CanvasPoint& v0, 
+            CanvasPoint& v1, 
+            CanvasPoint& v2
+        ) {
+            if (v0.y > v1.y) std::swap(v0, v1);
+            if (v0.y > v2.y) std::swap(v0, v2);
+            if (v1.y > v2.y) std::swap(v1, v2);
+        }
+
+        static float calculateSlope(
+            float start, float end,
+            float heightDiff
+        ) {
+            return heightDiff > 0 ? (end - start) / heightDiff : 0;
+        }
+
+        static TriangleSlopes calculateTriangleSlopes(
+            const CanvasPoint& v0, 
+            const CanvasPoint& v1, 
+            const CanvasPoint& v2
+        ) {
+            float topToMiddleHeight = v1.y - v0.y;
+            float topToBottomHeight = v2.y - v0.y;
+            float middleToBottomHeight = v2.y - v1.y;
+
+            return {
+                calculateSlope(v0.x, v1.x, topToMiddleHeight),
+                calculateSlope(v0.x, v2.x, topToBottomHeight),
+                calculateSlope(v1.x, v2.x, middleToBottomHeight),
+                calculateSlope(v0.depth, v1.depth, topToMiddleHeight),
+                calculateSlope(v0.depth, v2.depth, topToBottomHeight),
+                calculateSlope(v1.depth, v2.depth, middleToBottomHeight)
+            };
         }
 
         static glm::mat3 createRotationMatrixX(float angle) {
@@ -147,7 +188,9 @@ class Geometry {
         static CanvasPoint projectVertex(const glm::vec3& vertex, float focalLength) {
             int u = static_cast<int>((focalLength * vertex.x) / (-vertex.z) + Config::Display::WIDTH / 2);
             int v = static_cast<int>((focalLength * vertex.y) / (-vertex.z) + Config::Display::HEIGHT / 2);
-            return CanvasPoint(u, v);
+            CanvasPoint point(u, v);
+            point.depth = -vertex.z;  // Store z-depth for depth buffering
+            return point;
         }
 
         static std::vector<glm::vec3> transformToViewSpace(
@@ -156,8 +199,12 @@ class Geometry {
         ) {
             std::vector<glm::vec3> viewSpaceVertices;
             for (const auto& worldVertex : worldTriangle.vertices) {
+                // Translate vertex relative to camera position
                 glm::vec3 viewSpaceVertex = worldVertex - camera.getPosition();
+
+                // Rotate vertex based on camera orientation matrix
                 viewSpaceVertex = camera.getOrientation() * viewSpaceVertex;
+
                 viewSpaceVertices.push_back(viewSpaceVertex);
             }
             return viewSpaceVertices;
@@ -177,64 +224,50 @@ class Geometry {
 class Draw {
     private:
         DrawingWindow& window;
-
-        void sortVertices(
-            CanvasPoint& v0, 
-            CanvasPoint& v1, 
-            CanvasPoint& v2
-        ) {
-            if (v0.y > v1.y) std::swap(v0, v1);
-            if (v0.y > v2.y) std::swap(v0, v2);
-            if (v1.y > v2.y) std::swap(v1, v2);
-        }
-
-        float calculateSlope(
-            const CanvasPoint& start, 
-            const CanvasPoint& end
-        ) {
-        if (end.y - start.y > 0) {
-            return (end.x - start.x) / (end.y - start.y);
-        }
-        return 0;
-        }
-
-        struct TriangleSlopes {
-            float topToMiddle;
-            float topToBottom;
-            float middleToBottom;
-        };
-
-        TriangleSlopes calculate3Slopes(
-            const CanvasPoint& v0, 
-            const CanvasPoint& v1, 
-            const CanvasPoint& v2
-        ) {
-        return {
-            calculateSlope(v0, v1),
-            calculateSlope(v0, v2),
-            calculateSlope(v1, v2)
-        };
-        }
+        Config::Render& config;
 
         void fillTriangleHalf(
             float startY, float endY,
             float startX, float& x1, float& x2,
-            float slope1, float slope2,
+            float startZ, float& z1, float& z2,
+            float slopeX1, float slopeX2,
+            float slopeZ1, float slopeZ2,
             uint32_t color
         ) {
+            // Only fill if the height is positive
             if (endY - startY > 0) {
+                // Loop through each row of pixels top to bottom
+                // Clamp Y coordinates to screen bounds
                 for (int y = std::max(0, (int)startY); 
                     y < std::min(Config::Display::HEIGHT, (int)endY); 
                     y++) {
-                    int startX = std::max(0, (int)std::min(x1, x2));
-                    int endX = std::min(Config::Display::WIDTH - 1, (int)std::max(x1, x2));
+                    // Identify the start and end x-coordinates for the current row
+                    // Clamp X coordinates to screen bounds
+                    int xStart = std::max(0, (int)std::min(x1, x2));
+                    int xEnd = std::min(Config::Display::WIDTH - 1, (int)std::max(x1, x2));
 
-                    for (int x = startX; x <= endX; x++) {
-                        window.setPixelColour(x, y, color);
+                    // Calculate interpolated z-values for the current scanline
+                    float zStart = (x1 < x2) ? z1 : z2;
+                    float zEnd = (x1 < x2) ? z2 : z1;
+                    float zStep = (xEnd > xStart) ? (zEnd - zStart) / (xEnd - xStart) : 0;
+                    float z = zStart;
+
+                    // Fill pixels in current row with depth checking
+                    for (int x = xStart; x <= xEnd; x++) {
+                        int bufferIndex = y * Config::Display::WIDTH + x;
+                        // Only draw pixel if it's closer than existing depth 
+                        if (z < config.depthBuffer[bufferIndex]) {// Depth buffering in order to handle occlusion
+                            config.depthBuffer[bufferIndex] = z;
+                            window.setPixelColour(x, y, color);
+                        }
+                        z += zStep;
                     }
 
-                    x1 += slope1;
-                    x2 += slope2;
+                    // Update edge coordinates and depths using slopes
+                    x1 += slopeX1;
+                    x2 += slopeX2;
+                    z1 += slopeZ1;
+                    z2 += slopeZ2;
                 }
             }
         }
@@ -245,7 +278,8 @@ class Draw {
         }
 
     public:
-        Draw(DrawingWindow& window) : window(window) {}
+        Draw(DrawingWindow& window, Config::Render& config) 
+            : window(window), config(config) {}
 
         void drawLine(
             CanvasPoint from, 
@@ -254,17 +288,24 @@ class Draw {
         ) {
             float xDiff = to.x - from.x;
             float yDiff = to.y - from.y;
+
+            // Calculate number of steps needed i.e. length of line (Pythagorean)
             int steps = ceil(sqrt(xDiff*xDiff + yDiff*yDiff));
             
+            // Interpolated x and y coordinates along our line
             auto xValues = Math::interpolateSingleFloats(from.x, to.x, steps);
             auto yValues = Math::interpolateSingleFloats(from.y, to.y, steps);
             
+            // Pack colour into ARGB format
             uint32_t ARGBColour = colourToARGB(colour);
             
+            // Draw each pixel our the line
             for(int i = 0; i < steps; i++) {
+                // Round interpolated values
                 int x = round(xValues[i]);
                 int y = round(yValues[i]);
                 
+                 // make sure we only draw pixel if within screen bounds
                 if (x >= 0 && x < Config::Display::WIDTH && 
                     y >= 0 && y < Config::Display::HEIGHT) {
                     window.setPixelColour(x, y, ARGBColour);
@@ -283,27 +324,38 @@ class Draw {
             drawLine(v2, v0, colour);
         }
 
-        void fillTriangle(
-            CanvasPoint v0, 
-            CanvasPoint v1, 
-            CanvasPoint v2, 
-            Colour colour
-        ) {
+       void fillTriangle(CanvasPoint v0, CanvasPoint v1, CanvasPoint v2, Colour colour) {
             uint32_t ARGBColour = colourToARGB(colour);
             
-            sortVertices(v0, v1, v2);
-            TriangleSlopes slopes = calculate3Slopes(v0, v1, v2);
-
+            Math::sortVerticesByY(v0, v1, v2);
+            Math::TriangleSlopes slopes = Math::calculateTriangleSlopes(v0, v1, v2);
+            
             float x1 = v0.x;
             float x2 = v0.x;
-
-            fillTriangleHalf(v0.y, v1.y, v0.x, x1, x2, 
-                            slopes.topToMiddle, slopes.topToBottom, ARGBColour);
+            float z1 = v0.depth;
+            float z2 = v0.depth;
+            
+            // Fill top half of triangle 
+            // Using the coordinates and slopes for the top half of the triangle
+            fillTriangleHalf(
+                v0.y, v1.y, v0.x, x1, x2,
+                v0.depth, z1, z2,
+                slopes.topToMiddleX, slopes.topToBottomX,
+                slopes.topToMiddleZ, slopes.topToBottomZ,
+                ARGBColour
+            );
             
             x1 = v1.x;
-            
-            fillTriangleHalf(v1.y, v2.y, v1.x, x1, x2, 
-                            slopes.middleToBottom, slopes.topToBottom, ARGBColour);
+            z1 = v1.depth;
+
+            // Fill bottom half of triangle 
+            fillTriangleHalf(
+                v1.y, v2.y, v1.x, x1, x2,
+                v1.depth, z1, z2,
+                slopes.middleToBottomX, slopes.topToBottomX,
+                slopes.middleToBottomZ, slopes.topToBottomZ,
+                ARGBColour
+            );
         }
 };
 
@@ -318,20 +370,33 @@ class Renderer {
         Config::Render config;
         Draw drawer;
 
+        struct ProjectedTriangle {
+            CanvasPoint v0, v1, v2;
+            
+            ProjectedTriangle(
+                const CanvasPoint& v0, 
+                const CanvasPoint& v1, 
+                const CanvasPoint& v2
+            ) : v0(v0), v1(v1), v2(v2) {}
+        };
+
         void renderTriangle(
             const ModelTriangle& worldTriangle,
             const Colour& color
         ) {
+            // Transform thetriangle vertices from world space to camera space
             auto viewSpaceVertices = Geometry::transformToViewSpace(worldTriangle, camera);
 
+            // Implement our simple back-face culling
             if (Geometry::isTriangleVisible(viewSpaceVertices)) {
-                auto screenTriangle = Math::ProjectedTriangle(
+                // Project 3D vertices to 2D screen using perspective projection function
+                auto screenTriangle = ProjectedTriangle(
                     Geometry::projectVertex(viewSpaceVertices[0], Config::Display::FOCAL_LENGTH),
                     Geometry::projectVertex(viewSpaceVertices[1], Config::Display::FOCAL_LENGTH),
                     Geometry::projectVertex(viewSpaceVertices[2], Config::Display::FOCAL_LENGTH)
                 );
 
-                // Use drawer methods directly instead of function pointer
+                // Rasterise or render wireframe based on current mode
                 if (config.currentMode == Config::Render::Mode::WIREFRAME) {
                     drawer.drawTriangle(
                         screenTriangle.v0, 
@@ -352,11 +417,13 @@ class Renderer {
 
     public:
         Renderer(DrawingWindow& window) 
-            : window(window), 
-            drawer(window) {}
+            : window(window),
+              config(),  // Initialize config first
+              drawer(window, config) {}  // Pass config to drawer
 
         void render(const std::vector<ModelTriangle>& modelTriangles) {
             window.clearPixels();
+            config.clearDepthBuffer();
             
             for (const ModelTriangle& triangle : modelTriangles) {
                 renderTriangle(triangle, Config::Colours::DEFAULT_MESH_COLOR);
@@ -390,25 +457,29 @@ class Renderer {
 // (ModelLoader class - utility for loading 3D models)
 class ModelLoader {
     public:
-        static std::vector<ModelTriangle> loadOBJ(const std::string& filename, float scale) {
+        static std::vector<ModelTriangle> loadOBJ(
+            const std::string& filename, 
+            float scale
+        ) {
             std::vector<ModelTriangle> triangles;
             std::vector<glm::vec3> vertices;
             
+            // Open the OBJ file
             std::ifstream file(filename);
             if (!file.is_open()) {
-                std::cout << "Error: Could not open OBJ file: " << filename << std::endl;
                 return triangles;
             }
 
             std::string line;
             Colour defaultColour(200, 200, 200);
 
+            // Process file line by line
             while (std::getline(file, line)) {
                 std::vector<std::string> tokens = split(line, ' ');
                 if (tokens.empty()) continue;
 
                 if (tokens[0] == "v") {
-                    // Parse vertex
+                    // Parse vertex coordinates and scale them
                     if (tokens.size() >= 4) {
                         float x = std::stof(tokens[1]) * scale;
                         float y = std::stof(tokens[2]) * scale;
@@ -416,17 +487,21 @@ class ModelLoader {
                         vertices.push_back(glm::vec3(x, y, z));
                     }
                 }
+                
                 else if (tokens[0] == "f") {
-                    // Parse face (triangle)
+                    // Parse face indices (triangles)
                     if (tokens.size() >= 4) {
+                        // Split vertex data
                         std::vector<std::string> v1 = split(tokens[1], '/');
                         std::vector<std::string> v2 = split(tokens[2], '/');
                         std::vector<std::string> v3 = split(tokens[3], '/');
 
+                        // Convert from 1-based to 0-based indexing
                         int idx1 = std::stoi(v1[0]) - 1;
                         int idx2 = std::stoi(v2[0]) - 1;
                         int idx3 = std::stoi(v3[0]) - 1;
 
+                        // Create and store triangle
                         ModelTriangle triangle(
                             vertices[idx1],
                             vertices[idx2],

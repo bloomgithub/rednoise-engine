@@ -21,8 +21,8 @@
 //------------------------------------------------------------------------------
 
 // Display dimensions and pi
-#define WIDTH 340
-#define HEIGHT 340
+#define WIDTH 640
+#define HEIGHT 480
 #define PI 3.14159265359
 
 // Viewing parameters
@@ -307,15 +307,14 @@ void rotateVertex(glm::vec3& v, float angleX, float angleY) {
 CanvasPoint projectVertex(const glm::vec3& v) {
     // Calculates the projection scale based on FOV
     float fovRadians = FOV * PI / 180.0f;
+    float aspectRatio = static_cast<float>(WIDTH) / HEIGHT;
     float projScale = 1.0f / tan(fovRadians * 0.5f);
     
     // World to camera transformation 
     glm::vec3 view(v.x - camera.x, v.y - camera.y, v.z - camera.z);
     
-     // Camera to screen transormation
+    // Camera to screen transformation
     glm::vec3 rotated = rotateX(rotateY(view, camera.rotationY), camera.rotationX);
-    
-    float normalizedDepth = (rotated.z - NEAR) / (FAR - NEAR);
     
     if (rotated.z <= NEAR || rotated.z >= FAR) {
         return CanvasPoint(0, 0, 0.0f);
@@ -323,9 +322,9 @@ CanvasPoint projectVertex(const glm::vec3& v) {
 
     float invDepth = NEAR / rotated.z;
     
-     // Perspective projection
+    // Perspective projection with aspect ratio correction
     return CanvasPoint(
-        WIDTH * 0.5f + (rotated.x * projScale / rotated.z) * WIDTH * 0.4f,
+        WIDTH * 0.5f + (rotated.x * projScale / rotated.z) * WIDTH * 0.4f * (1.0f / aspectRatio),
         HEIGHT * 0.5f - (rotated.y * projScale / rotated.z) * HEIGHT * 0.4f,
         invDepth
     );
@@ -799,9 +798,6 @@ void drawBottomFlatTriangle(DrawingWindow &window,
    float rightEdgeSlope = (bottomRight.y - topVertex.y) > edgeOffset ? 
        (bottomRight.x - topVertex.x) / (bottomRight.y - topVertex.y) : 0;
    
-   int screenMaxY = static_cast<int>(window.height - 1);
-   int screenMaxX = static_cast<int>(window.width - 1);
-   
    // Calculates the scanline range
    int scanlineStart = clampToBounds(std::ceil(topVertex.y), 0, window.height - 1);
    int scanlineEnd = clampToBounds(std::floor(bottomLeft.y), 0, window.height - 1);
@@ -845,9 +841,6 @@ void drawTopFlatTriangle(DrawingWindow &window,
        (bottomVertex.x - topLeft.x) / (bottomVertex.y - topLeft.y) : 0;
    float rightEdgeSlope = (bottomVertex.y - topRight.y) > edgeOffset ? 
        (bottomVertex.x - topRight.x) / (bottomVertex.y - topRight.y) : 0;
-   
-   int screenMaxY = static_cast<int>(window.height - 1);
-   int screenMaxX = static_cast<int>(window.width - 1);
    
    int scanlineStart = clampToBounds(std::ceil(topLeft.y), 0, window.height - 1);
    int scanlineEnd = clampToBounds(std::floor(bottomVertex.y), 0, window.height - 1);
@@ -1992,7 +1985,7 @@ void updateComplexAnimation(float elapsedTime) {
     const float deltaTime = 1.0f/60.0f;
     const float transitionDuration = 1.0f;
     const float orbitRadius = 1.2f;
-    const float rotationSpeed = 1.7f; 
+    const float rotationSpeed = 1.5f;
     
     // Keeps the model oriented straight
     modelState.rotationX = 0.0f;

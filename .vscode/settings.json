@@ -54,6 +54,9 @@
         "tuple": "cpp",
         "typeinfo": "cpp",
         "unordered_map": "cpp",
-        "variant": "cpp"
+        "variant": "cpp",
+        "__tree": "cpp",
+        "map": "cpp",
+        "numeric": "cpp"
     }
 }

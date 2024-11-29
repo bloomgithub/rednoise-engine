@@ -1616,7 +1616,7 @@ float computeSoftShadow(const glm::vec3& point, const ModelTriangle* sourceTrian
                        const std::vector<ModelTriangle>& triangles) {
     float visibility = 0.0f;
     const float ambient_strength = 0.2f;
-    const int shadow_samples = 2;        // Soft shadow quality (higher = slower render)
+    const int shadow_samples = 16;        // Soft shadow quality (higher = slower render)
     const float shadow_bias = 0.005f;     // Shadow acne prevention
     const float light_radius = 0.15f;     // Size of the light
     

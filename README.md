@@ -1,5 +1,7 @@
 # RedNoise 3D Computer Graphics Engine
 
+A C++ rendering engine for the creation of promotional ident videos. The engine supports wireframe, rasterisation, and raytracing rendering modes with added lighting, physics simulation, and material systems.
+
 ## Setup
 1. Clone the repository:
 ```bash
